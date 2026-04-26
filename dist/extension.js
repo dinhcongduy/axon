@@ -38,6 +38,10 @@ var vscode2 = __toESM(require("vscode"));
 
 // src/AxonViewProvider.ts
 var vscode = __toESM(require("vscode"));
+var fs = __toESM(require("fs"));
+var path = __toESM(require("path"));
+var https = __toESM(require("https"));
+var http = __toESM(require("http"));
 var SKILLS = [
   { id: "algorithmic-art", name: "Algorithmic Art", description: "Generate algorithmic and generative art programmatically", icon: "\u{1F3A8}", url: "https://github.com/anthropics/skills/tree/main/skills/algorithmic-art" },
   { id: "brand-guidelines", name: "Brand Guidelines", description: "Create and enforce brand guidelines for projects", icon: "\u{1F4CB}", url: "https://github.com/anthropics/skills/tree/main/skills/brand-guidelines" },
@@ -58,12 +62,13 @@ var SKILLS = [
   { id: "xlsx", name: "XLSX", description: "Create and manipulate Excel spreadsheets", icon: "\u{1F4C8}", url: "https://github.com/anthropics/skills/tree/main/skills/xlsx" }
 ];
 var AxonViewProvider = class {
-  constructor(_extensionUri) {
+  constructor(_extensionUri, _context) {
     this._extensionUri = _extensionUri;
+    this._context = _context;
   }
-  _extensionUri;
   static viewType = "axonSidebar";
   _view;
+  _previewPanels = /* @__PURE__ */ new Map();
   resolveWebviewView(webviewView, _context, _token) {
     this._view = webviewView;
     webviewView.webview.options = {
@@ -73,17 +78,319 @@ var AxonViewProvider = class {
     webviewView.webview.html = this._getHtmlForWebview();
     webviewView.webview.onDidReceiveMessage(
       (message) => {
-        if (message.command === "openLink") {
+        if (message.command === "showSkillPreview") {
+          this._openSkillPreview(message.skill);
+        } else if (message.command === "openLink") {
           vscode.env.openExternal(vscode.Uri.parse(message.url));
         }
       }
     );
   }
+  _openSkillPreview(skill) {
+    const existingPanel = this._previewPanels.get(skill.id);
+    if (existingPanel) {
+      existingPanel.reveal(vscode.ViewColumn.One);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      "axonSkillPreview",
+      `${skill.icon} ${skill.name}`,
+      vscode.ViewColumn.One,
+      {
+        enableScripts: true,
+        localResourceRoots: [this._extensionUri]
+      }
+    );
+    panel.webview.html = this._getSkillPreviewHtml(skill, this._isSkillInstalled(skill.id));
+    panel.webview.onDidReceiveMessage(
+      (message) => {
+        if (message.command === "openLink") {
+          vscode.env.openExternal(vscode.Uri.parse(message.url));
+        } else if (message.command === "copyToClipboard") {
+          vscode.env.clipboard.writeText(message.text).then(() => {
+            panel.webview.postMessage({ command: "copySuccess" });
+          });
+        } else if (message.command === "installSkill") {
+          this._installSkill(message.skill, panel);
+        } else if (message.command === "uninstallSkill") {
+          this._uninstallSkill(message.skill, panel);
+        }
+      },
+      void 0,
+      this._context.subscriptions
+    );
+    panel.onDidDispose(
+      () => {
+        this._previewPanels.delete(skill.id);
+      },
+      void 0,
+      this._context.subscriptions
+    );
+    this._previewPanels.set(skill.id, panel);
+  }
+  _isSkillInstalled(skillId) {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return false;
+    }
+    return fs.existsSync(path.join(folders[0].uri.fsPath, ".agents", "skills", skillId));
+  }
+  async _installSkill(skill, panel) {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      panel.webview.postMessage({ command: "installError", message: "No workspace folder open." });
+      return;
+    }
+    const targetDir = path.join(folders[0].uri.fsPath, ".agents", "skills", skill.id);
+    const parts = skill.url.replace("https://github.com/", "").split("/");
+    const owner = parts[0], repo = parts[1], branch = parts[3];
+    const githubPath = parts.slice(4).join("/");
+    panel.webview.postMessage({ command: "installProgress", message: "Connecting to GitHub..." });
+    try {
+      await this._downloadGithubFolder(owner, repo, branch, githubPath, targetDir, panel);
+      panel.webview.postMessage({ command: "installSuccess" });
+    } catch (err) {
+      panel.webview.postMessage({ command: "installError", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  async _uninstallSkill(skill, panel) {
+    const answer = await vscode.window.showWarningMessage(
+      `Are you sure you want to remove the skill "${skill.name}"?`,
+      { modal: true },
+      "Yes",
+      "No"
+    );
+    if (answer !== "Yes") {
+      panel.webview.postMessage({ command: "uninstallCancelled" });
+      return;
+    }
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      panel.webview.postMessage({ command: "uninstallError", message: "No workspace folder open." });
+      return;
+    }
+    const targetDir = path.join(folders[0].uri.fsPath, ".agents", "skills", skill.id);
+    try {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      panel.webview.postMessage({ command: "uninstallSuccess" });
+    } catch (err) {
+      panel.webview.postMessage({ command: "uninstallError", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  async _downloadGithubFolder(owner, repo, branch, githubPath, localPath, panel) {
+    fs.mkdirSync(localPath, { recursive: true });
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${githubPath}?ref=${branch}`;
+    const body = await this._httpGet(apiUrl);
+    const items = JSON.parse(body);
+    for (const item of items) {
+      panel.webview.postMessage({ command: "installProgress", message: `Downloading ${item.name}...` });
+      if (item.type === "file" && item.download_url) {
+        const buf = await this._httpGetBuffer(item.download_url);
+        fs.writeFileSync(path.join(localPath, item.name), buf);
+      } else if (item.type === "dir") {
+        await this._downloadGithubFolder(owner, repo, branch, item.path, path.join(localPath, item.name), panel);
+      }
+    }
+  }
+  _httpGet(url) {
+    return this._httpGetBuffer(url).then((b) => b.toString("utf8"));
+  }
+  _httpGetBuffer(url) {
+    return new Promise((resolve, reject) => {
+      const mod = url.startsWith("https://") ? https : http;
+      const req = mod.get(url, { headers: { "User-Agent": "AXON-VSCode-Extension/1.0" } }, (res) => {
+        if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+          this._httpGetBuffer(res.headers.location).then(resolve).catch(reject);
+          return;
+        }
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks)));
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+    });
+  }
+  _getSkillPreviewHtml(skill, isInstalled) {
+    const skillJson = JSON.stringify(skill);
+    return [
+      "<!DOCTYPE html>",
+      '<html lang="en">',
+      "<head>",
+      '<meta charset="UTF-8">',
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">`,
+      "<title>" + skill.name + " \u2013 Skill Preview</title>",
+      "<style>",
+      "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');",
+      "* { margin: 0; padding: 0; box-sizing: border-box; }",
+      'body { font-family: var(--vscode-font-family, "Inter", -apple-system, BlinkMacSystemFont, sans-serif); background: var(--vscode-editor-background, #1e1e2e); color: var(--vscode-foreground, #cdd6f4); min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 40px 24px; }',
+      ".preview-card { width: 100%; max-width: 640px; background: var(--vscode-editorWidget-background, rgba(255,255,255,0.04)); border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1)); border-radius: 16px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }",
+      ".card-header { padding: 32px 32px 24px; background: linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(168,85,247,0.1) 100%); border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.08)); display: flex; align-items: center; gap: 20px; }",
+      ".hero-icon { width: 72px; height: 72px; font-size: 40px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, rgba(99,102,241,0.3), rgba(168,85,247,0.3)); border-radius: 18px; border: 1px solid rgba(99,102,241,0.3); flex-shrink: 0; box-shadow: 0 4px 16px rgba(99,102,241,0.2); }",
+      ".header-text { flex: 1; min-width: 0; }",
+      ".skill-title { font-size: 22px; font-weight: 700; color: var(--vscode-foreground, #e2e8f0); line-height: 1.2; margin-bottom: 6px; }",
+      ".skill-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: rgba(99,102,241,0.2); border: 1px solid rgba(99,102,241,0.35); border-radius: 20px; font-size: 11px; font-weight: 500; color: #a5b4fc; letter-spacing: 0.3px; }",
+      ".card-body { padding: 28px 32px; display: flex; flex-direction: column; gap: 20px; }",
+      ".field { display: flex; flex-direction: column; gap: 6px; }",
+      ".field-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--vscode-descriptionForeground, rgba(255,255,255,0.4)); }",
+      ".field-value { font-size: 14px; color: var(--vscode-foreground, #cdd6f4); line-height: 1.6; padding: 10px 14px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.06)); word-break: break-all; }",
+      '.field-value.mono { font-family: var(--vscode-editor-font-family, "Courier New", monospace); font-size: 12px; color: #94e2d5; }',
+      ".field-value.description { line-height: 1.7; font-size: 13px; }",
+      ".url-row { display: flex; align-items: stretch; gap: 8px; }",
+      '.url-link { flex: 1; display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(99,102,241,0.2); text-decoration: none; color: #818cf8; font-size: 12px; font-family: var(--vscode-editor-font-family, "Courier New", monospace); word-break: break-all; transition: all 0.15s ease; cursor: pointer; min-width: 0; }',
+      ".url-link:hover { background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.5); color: #a5b4fc; }",
+      ".url-icon { flex-shrink: 0; font-size: 14px; }",
+      ".copy-btn { flex-shrink: 0; display: flex; align-items: center; gap: 5px; padding: 0 14px; background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.25); border-radius: 8px; color: #a5b4fc; font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; white-space: nowrap; font-family: inherit; }",
+      ".copy-btn:hover { background: rgba(99,102,241,0.2); border-color: rgba(99,102,241,0.5); color: #c4b5fd; }",
+      ".copy-btn:active { transform: scale(0.96); }",
+      ".copy-btn.copied { background: rgba(52,211,153,0.15); border-color: rgba(52,211,153,0.4); color: #6ee7b7; }",
+      ".copy-icon { font-size: 13px; }",
+      ".copy-label { letter-spacing: 0.2px; }",
+      ".divider { height: 1px; background: var(--vscode-panel-border, rgba(255,255,255,0.06)); }",
+      ".card-footer { padding: 16px 32px; background: rgba(0,0,0,0.15); border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.06)); }",
+      ".footer-btns { display: flex; gap: 10px; }",
+      ".install-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 16px; font-size: 13px; font-weight: 600; color: #fff; background: linear-gradient(135deg, #10b981, #059669); border: none; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; font-family: inherit; }",
+      ".install-btn:hover:not([disabled]) { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(16,185,129,0.4); }",
+      ".install-btn:active:not([disabled]) { transform: translateY(0); }",
+      ".install-btn[disabled] { opacity: 0.55; cursor: not-allowed; }",
+      ".install-btn.loading { background: linear-gradient(135deg, #6366f1, #8b5cf6); }",
+      ".install-btn.error { background: linear-gradient(135deg, #ef4444, #dc2626); }",
+      ".install-status { margin-top: 8px; font-size: 11px; color: var(--vscode-descriptionForeground, rgba(255,255,255,0.5)); min-height: 16px; text-align: center; }",
+      ".uninstall-btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 16px; font-size: 13px; font-weight: 600; color: #fff; background: linear-gradient(135deg, #ef4444, #dc2626); border: none; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; font-family: inherit; }",
+      ".uninstall-btn:hover:not([disabled]) { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(239,68,68,0.4); }",
+      ".uninstall-btn:active:not([disabled]) { transform: translateY(0); }",
+      ".uninstall-btn[disabled] { opacity: 0.3; cursor: not-allowed; }",
+      "</style>",
+      "</head>",
+      "<body>",
+      '<div class="preview-card">',
+      '  <div class="card-header">',
+      '    <div class="hero-icon">' + skill.icon + "</div>",
+      '    <div class="header-text">',
+      '      <div class="skill-title">' + skill.name + "</div>",
+      '      <span class="skill-badge">\u26A1 Skill</span>',
+      "    </div>",
+      "  </div>",
+      '  <div class="card-body">',
+      '    <div class="field">',
+      '      <div class="field-label">Description</div>',
+      '      <div class="field-value description">' + skill.description + "</div>",
+      "    </div>",
+      '    <div class="divider"></div>',
+      '    <div class="field">',
+      '      <div class="field-label">Skill ID</div>',
+      '      <div class="field-value mono">' + skill.id + "</div>",
+      "    </div>",
+      '    <div class="field">',
+      '      <div class="field-label">Repository URL</div>',
+      '      <div class="url-row">',
+      '        <a class="url-link" id="urlLink"><span class="url-icon">\u{1F517}</span><span>' + skill.url + "</span></a>",
+      '        <button class="copy-btn" id="copyBtn"><span class="copy-icon">\u2398</span><span class="copy-label">Copy</span></button>',
+      "      </div>",
+      "    </div>",
+      "  </div>",
+      '  <div class="card-footer">',
+      '    <div class="footer-btns">',
+      '      <button class="install-btn" id="installBtn"' + (isInstalled ? " disabled" : "") + ">",
+      "        <span>" + (isInstalled ? "\u2713" : "\u2B07") + "</span>",
+      '        <span class="install-label">' + (isInstalled ? "Installed" : "Install") + "</span>",
+      "      </button>",
+      '      <button class="uninstall-btn" id="uninstallBtn"' + (isInstalled ? "" : " disabled") + ">",
+      "        <span>\u{1F5D1}\uFE0F</span>",
+      '        <span class="uninstall-label">Uninstall</span>',
+      "      </button>",
+      "    </div>",
+      '    <div class="install-status" id="installStatus"></div>',
+      "  </div>",
+      "</div>",
+      "<script>",
+      "var vscodeApi = acquireVsCodeApi();",
+      "var skill = " + skillJson + ";",
+      'document.getElementById("urlLink").addEventListener("click", function() {',
+      '  vscodeApi.postMessage({ command: "openLink", url: skill.url });',
+      "});",
+      'document.getElementById("copyBtn").addEventListener("click", function() {',
+      '  vscodeApi.postMessage({ command: "copyToClipboard", text: skill.url });',
+      "});",
+      'document.getElementById("installBtn").addEventListener("click", function() {',
+      "  if (this.disabled) { return; }",
+      "  this.disabled = true;",
+      '  this.classList.add("loading");',
+      '  this.querySelector(".install-label").textContent = "Installing...";',
+      '  document.getElementById("installStatus").textContent = "";',
+      '  vscodeApi.postMessage({ command: "installSkill", skill: skill });',
+      "});",
+      'document.getElementById("uninstallBtn").addEventListener("click", function() {',
+      "  if (this.disabled) { return; }",
+      "  this.disabled = true;",
+      '  this.querySelector(".uninstall-label").textContent = "Removing...";',
+      '  document.getElementById("installStatus").textContent = "";',
+      '  vscodeApi.postMessage({ command: "uninstallSkill", skill: skill });',
+      "});",
+      'window.addEventListener("message", function(e) {',
+      "  var d = e.data; if (!d) return;",
+      '  var installBtn = document.getElementById("installBtn");',
+      '  var uninstallBtn = document.getElementById("uninstallBtn");',
+      '  var status = document.getElementById("installStatus");',
+      '  if (d.command === "copySuccess") {',
+      '    var btn = document.getElementById("copyBtn");',
+      '    btn.classList.add("copied");',
+      '    btn.querySelector(".copy-icon").textContent = "\u2713";',
+      '    btn.querySelector(".copy-label").textContent = "Copied!";',
+      "    setTimeout(function() {",
+      '      btn.classList.remove("copied");',
+      '      btn.querySelector(".copy-icon").textContent = "\u2358";',
+      '      btn.querySelector(".copy-label").textContent = "Copy";',
+      "    }, 2000);",
+      '  } else if (d.command === "installProgress") {',
+      "    status.textContent = d.message;",
+      '  } else if (d.command === "installSuccess") {',
+      '    installBtn.classList.remove("loading", "error");',
+      "    installBtn.disabled = true;",
+      '    installBtn.querySelector("span").textContent = "\u2713";',
+      '    installBtn.querySelector(".install-label").textContent = "Installed";',
+      "    uninstallBtn.disabled = false;",
+      '    status.textContent = "Skill installed to .agents/skills/.";',
+      '  } else if (d.command === "installError") {',
+      '    installBtn.classList.remove("loading");',
+      '    installBtn.classList.add("error");',
+      "    installBtn.disabled = false;",
+      '    installBtn.querySelector("span").textContent = "\u2715";',
+      '    installBtn.querySelector(".install-label").textContent = "Retry";',
+      '    status.textContent = "Install error: " + d.message;',
+      '  } else if (d.command === "uninstallSuccess") {',
+      '    installBtn.classList.remove("loading", "error");',
+      "    installBtn.disabled = false;",
+      '    installBtn.querySelector("span").textContent = "\u2B07";',
+      '    installBtn.querySelector(".install-label").textContent = "Install";',
+      "    uninstallBtn.disabled = true;",
+      '    uninstallBtn.querySelector(".uninstall-label").textContent = "Uninstall";',
+      '    status.textContent = "Skill removed.";',
+      '  } else if (d.command === "uninstallError") {',
+      "    uninstallBtn.disabled = false;",
+      '    uninstallBtn.querySelector(".uninstall-label").textContent = "Uninstall";',
+      '    status.textContent = "Uninstall error: " + d.message;',
+      '  } else if (d.command === "uninstallCancelled") {',
+      "    uninstallBtn.disabled = false;",
+      '    uninstallBtn.querySelector(".uninstall-label").textContent = "Uninstall";',
+      "  }",
+      "});",
+      "</script>",
+      "</body>",
+      "</html>"
+    ].join("\n");
+  }
   _getHtmlForWebview() {
     const skillsJson = JSON.stringify(SKILLS);
     let cardsHtml = "";
     for (const s of SKILLS) {
-      cardsHtml += '<div class="skill-card" data-url="' + s.url + '"><div class="skill-icon">' + s.icon + '</div><div class="skill-info"><div class="skill-name">' + s.name + '</div><div class="skill-description">' + s.description + "</div></div></div>";
+      const skillData = JSON.stringify(s).replace(/"/g, "&quot;");
+      cardsHtml += '<div class="skill-card" data-id="' + s.id + '" data-skill="' + skillData + '" data-url="' + s.url + '"><div class="skill-icon">' + s.icon + '</div><div class="skill-info"><div class="skill-name">' + s.name + '</div><div class="skill-description">' + s.description + "</div></div></div>";
     }
     const htmlParts = [
       "<!DOCTYPE html>",
@@ -180,8 +487,11 @@ var AxonViewProvider = class {
       'var cards = skillsGrid.querySelectorAll(".skill-card");',
       "for (var i = 0; i < cards.length; i++) {",
       '  cards[i].addEventListener("click", function() {',
-      '    var url = this.getAttribute("data-url");',
-      '    if (url) { vscodeApi.postMessage({ command: "openLink", url: url }); }',
+      '    var raw = this.getAttribute("data-skill");',
+      "    if (raw) {",
+      `      var skill = JSON.parse(raw.replace(/&quot;/g, '"'));`,
+      '      vscodeApi.postMessage({ command: "showSkillPreview", skill: skill });',
+      "    }",
       "  });",
       "}",
       "</script>",
@@ -194,7 +504,7 @@ var AxonViewProvider = class {
 
 // src/extension.ts
 function activate(context) {
-  const provider = new AxonViewProvider(context.extensionUri);
+  const provider = new AxonViewProvider(context.extensionUri, context);
   context.subscriptions.push(
     vscode2.window.registerWebviewViewProvider(AxonViewProvider.viewType, provider)
   );
