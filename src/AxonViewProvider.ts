@@ -12,6 +12,12 @@ interface Skill {
   url: string;
 }
 
+const SKILL_DOWNLOADS = '1000 downloads';
+const SKILL_RATING_LABEL = '5 stars';
+const SKILL_STARS = '&#9733;&#9733;&#9733;&#9733;&#9733;';
+const DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>';
+const CHECK_ICON = '&#10003;';
+
 const SKILLS: Skill[] = [
   { id: 'algorithmic-art', name: 'Algorithmic Art', description: 'Generate algorithmic and generative art programmatically', icon: '🎨', url: 'https://github.com/anthropics/skills/tree/main/skills/algorithmic-art' },
   { id: 'brand-guidelines', name: 'Brand Guidelines', description: 'Create and enforce brand guidelines for projects', icon: '📋', url: 'https://github.com/anthropics/skills/tree/main/skills/brand-guidelines' },
@@ -212,7 +218,7 @@ export class AxonViewProvider implements vscode.WebviewViewProvider {
     const templatePath = vscode.Uri.joinPath(this._context.extensionUri, 'src', 'views', 'preview.html').fsPath;
     let html = fs.readFileSync(templatePath, 'utf8');
 
-    const installIcon = isInstalled ? '✓' : '⬇';
+    const installIcon = isInstalled ? CHECK_ICON : DOWNLOAD_ICON;
     const installLabel = isInstalled ? 'Installed' : 'Install';
     const installDisabled = isInstalled ? ' disabled' : '';
     const uninstallDisabled = isInstalled ? '' : ' disabled';
@@ -222,6 +228,9 @@ export class AxonViewProvider implements vscode.WebviewViewProvider {
                .replace(/{{SKILL_DESC}}/g, skill.description)
                .replace(/{{SKILL_ID}}/g, skill.id)
                .replace(/{{SKILL_URL}}/g, skill.url)
+               .replace(/{{SKILL_DOWNLOADS}}/g, SKILL_DOWNLOADS)
+               .replace(/{{SKILL_RATING_LABEL}}/g, SKILL_RATING_LABEL)
+               .replace(/{{SKILL_STARS}}/g, SKILL_STARS)
                .replace(/{{SKILL_JSON}}/g, JSON.stringify(skill))
                .replace(/{{INSTALL_ICON}}/g, installIcon)
                .replace(/{{INSTALL_LABEL}}/g, installLabel)
@@ -243,6 +252,10 @@ export class AxonViewProvider implements vscode.WebviewViewProvider {
         + '<div class="skill-info">'
         + '<div class="skill-name">' + s.name + '</div>'
         + '<div class="skill-description">' + s.description + '</div>'
+        + '<div class="skill-meta">'
+        + '<span class="skill-meta-item"><span class="meta-icon" aria-hidden="true">&#8595;</span><span>' + SKILL_DOWNLOADS + '</span></span>'
+        + '<span class="skill-meta-item"><span class="stars" aria-hidden="true">' + SKILL_STARS + '</span><span>' + SKILL_RATING_LABEL + '</span></span>'
+        + '</div>'
         + '</div></div>';
     }
 
