@@ -42,6 +42,11 @@ var fs = __toESM(require("fs"));
 var path = __toESM(require("path"));
 var https = __toESM(require("https"));
 var http = __toESM(require("http"));
+var SKILL_DOWNLOADS = "1000 downloads";
+var SKILL_RATING_LABEL = "5 stars";
+var SKILL_STARS = "&#9733;&#9733;&#9733;&#9733;&#9733;";
+var DOWNLOAD_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>';
+var CHECK_ICON = "&#10003;";
 var SKILLS = [
   { id: "algorithmic-art", name: "Algorithmic Art", description: "Generate algorithmic and generative art programmatically", icon: "\u{1F3A8}", url: "https://github.com/anthropics/skills/tree/main/skills/algorithmic-art" },
   { id: "brand-guidelines", name: "Brand Guidelines", description: "Create and enforce brand guidelines for projects", icon: "\u{1F4CB}", url: "https://github.com/anthropics/skills/tree/main/skills/brand-guidelines" },
@@ -66,6 +71,8 @@ var AxonViewProvider = class {
     this._extensionUri = _extensionUri;
     this._context = _context;
   }
+  _extensionUri;
+  _context;
   static viewType = "axonSidebar";
   _view;
   _previewPanels = /* @__PURE__ */ new Map();
@@ -220,11 +227,11 @@ var AxonViewProvider = class {
   _getSkillPreviewHtml(skill, isInstalled) {
     const templatePath = vscode.Uri.joinPath(this._context.extensionUri, "src", "views", "preview.html").fsPath;
     let html = fs.readFileSync(templatePath, "utf8");
-    const installIcon = isInstalled ? "\u2713" : "\u2B07";
+    const installIcon = isInstalled ? CHECK_ICON : DOWNLOAD_ICON;
     const installLabel = isInstalled ? "Installed" : "Install";
     const installDisabled = isInstalled ? " disabled" : "";
     const uninstallDisabled = isInstalled ? "" : " disabled";
-    html = html.replace(/{{SKILL_NAME}}/g, skill.name).replace(/{{SKILL_ICON}}/g, skill.icon).replace(/{{SKILL_DESC}}/g, skill.description).replace(/{{SKILL_ID}}/g, skill.id).replace(/{{SKILL_URL}}/g, skill.url).replace(/{{SKILL_JSON}}/g, JSON.stringify(skill)).replace(/{{INSTALL_ICON}}/g, installIcon).replace(/{{INSTALL_LABEL}}/g, installLabel).replace(/{{INSTALL_BTN_DISABLED}}/g, installDisabled).replace(/{{UNINSTALL_BTN_DISABLED}}/g, uninstallDisabled);
+    html = html.replace(/{{SKILL_NAME}}/g, skill.name).replace(/{{SKILL_ICON}}/g, skill.icon).replace(/{{SKILL_DESC}}/g, skill.description).replace(/{{SKILL_ID}}/g, skill.id).replace(/{{SKILL_URL}}/g, skill.url).replace(/{{SKILL_DOWNLOADS}}/g, SKILL_DOWNLOADS).replace(/{{SKILL_RATING_LABEL}}/g, SKILL_RATING_LABEL).replace(/{{SKILL_STARS}}/g, SKILL_STARS).replace(/{{SKILL_JSON}}/g, JSON.stringify(skill)).replace(/{{INSTALL_ICON}}/g, installIcon).replace(/{{INSTALL_LABEL}}/g, installLabel).replace(/{{INSTALL_BTN_DISABLED}}/g, installDisabled).replace(/{{UNINSTALL_BTN_DISABLED}}/g, uninstallDisabled);
     return html;
   }
   _getHtmlForWebview() {
@@ -232,7 +239,7 @@ var AxonViewProvider = class {
     let cardsHtml = "";
     for (const s of SKILLS) {
       const skillData = JSON.stringify(s).replace(/"/g, "&quot;");
-      cardsHtml += '<div class="skill-card" data-id="' + s.id + '" data-skill="' + skillData + '" data-url="' + s.url + '"><div class="skill-icon">' + s.icon + '</div><div class="skill-info"><div class="skill-name">' + s.name + '</div><div class="skill-description">' + s.description + "</div></div></div>";
+      cardsHtml += '<div class="skill-card" data-id="' + s.id + '" data-skill="' + skillData + '" data-url="' + s.url + '"><div class="skill-icon">' + s.icon + '</div><div class="skill-info"><div class="skill-name">' + s.name + '</div><div class="skill-description">' + s.description + '</div><div class="skill-meta"><span class="skill-meta-item"><span class="meta-icon" aria-hidden="true">&#8595;</span><span>' + SKILL_DOWNLOADS + '</span></span><span class="skill-meta-item"><span class="stars" aria-hidden="true">' + SKILL_STARS + "</span><span>" + SKILL_RATING_LABEL + "</span></span></div></div></div>";
     }
     const templatePath = vscode.Uri.joinPath(this._context.extensionUri, "src", "views", "sidebar.html").fsPath;
     let html = fs.readFileSync(templatePath, "utf8");

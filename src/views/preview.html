@@ -87,6 +87,42 @@
       letter-spacing: 0.3px;
     }
 
+    .header-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      margin-bottom: 8px;
+    }
+
+    .header-stat {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      padding: 5px 9px;
+      background: rgba(0, 0, 0, 0.18);
+      border: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.08));
+      border-radius: 999px;
+      color: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.68));
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .header-stat-icon {
+      color: var(--vscode-charts-blue, #3794ff);
+      font-size: 12px;
+      line-height: 1;
+    }
+
+    .header-rating-stars {
+      color: var(--vscode-charts-yellow, #d7ba7d);
+      line-height: 1;
+    }
+
     .card-body {
       padding: 28px 32px;
       display: flex;
@@ -257,6 +293,27 @@
       cursor: not-allowed;
     }
 
+    .install-icon {
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+
+    .install-icon svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
     .install-btn.loading {
       background: linear-gradient(135deg, #6366f1, #8b5cf6);
     }
@@ -314,6 +371,16 @@
       <div class="hero-icon">{{SKILL_ICON}}</div>
       <div class="header-text">
         <div class="skill-title">{{SKILL_NAME}}</div>
+        <div class="header-stats">
+          <span class="header-stat">
+            <span class="header-stat-icon" aria-hidden="true">&#8595;</span>
+            <span>{{SKILL_DOWNLOADS}}</span>
+          </span>
+          <span class="header-stat">
+            <span class="header-rating-stars" aria-hidden="true">{{SKILL_STARS}}</span>
+            <span>{{SKILL_RATING_LABEL}}</span>
+          </span>
+        </div>
         <span class="skill-badge">⚡ Skill</span>
       </div>
     </div>
@@ -339,7 +406,7 @@
     <div class="card-footer">
       <div class="footer-btns">
         <button class="install-btn" id="installBtn" {{INSTALL_BTN_DISABLED}}>
-          <span>{{INSTALL_ICON}}</span>
+          <span class="install-icon" aria-hidden="true">{{INSTALL_ICON}}</span>
           <span class="install-label">{{INSTALL_LABEL}}</span>
         </button>
         <button class="uninstall-btn" id="uninstallBtn" {{UNINSTALL_BTN_DISABLED}}>
@@ -356,6 +423,7 @@
   <script>
     var vscodeApi = acquireVsCodeApi();
     var skill = JSON.parse(document.getElementById("skillData").textContent);
+    var downloadIcon = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>';
     document.getElementById("urlLink").addEventListener("click", function () {
       vscodeApi.postMessage({ command: "openLink", url: skill.url });
     });
@@ -397,7 +465,7 @@
       } else if (d.command === "installSuccess") {
         installBtn.classList.remove("loading", "error");
         installBtn.disabled = true;
-        installBtn.querySelector("span").textContent = "\u2713";
+        installBtn.querySelector(".install-icon").textContent = "\u2713";
         installBtn.querySelector(".install-label").textContent = "Installed";
         uninstallBtn.disabled = false;
         status.textContent = "Skill installed to .agents/skills/.";
@@ -405,13 +473,13 @@
         installBtn.classList.remove("loading");
         installBtn.classList.add("error");
         installBtn.disabled = false;
-        installBtn.querySelector("span").textContent = "\u2715";
+        installBtn.querySelector(".install-icon").textContent = "\u2715";
         installBtn.querySelector(".install-label").textContent = "Retry";
         status.textContent = "Install error: " + d.message;
       } else if (d.command === "uninstallSuccess") {
         installBtn.classList.remove("loading", "error");
         installBtn.disabled = false;
-        installBtn.querySelector("span").textContent = "\u2b07";
+        installBtn.querySelector(".install-icon").innerHTML = downloadIcon;
         installBtn.querySelector(".install-label").textContent = "Install";
         uninstallBtn.disabled = true;
         uninstallBtn.querySelector(".uninstall-label").textContent = "Uninstall";
