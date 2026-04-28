@@ -66,6 +66,8 @@ var AxonViewProvider = class {
     this._extensionUri = _extensionUri;
     this._context = _context;
   }
+  _extensionUri;
+  _context;
   static viewType = "axonSidebar";
   _view;
   _previewPanels = /* @__PURE__ */ new Map();
